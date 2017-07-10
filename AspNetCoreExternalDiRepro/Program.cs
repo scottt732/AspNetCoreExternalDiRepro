@@ -82,31 +82,36 @@ namespace throwawayx
             
             // The point of this object is to flow some stuff into the Startup class's
             // constructor via DI.  Trying to avoid using statics
-            var startupContainer = new StartupContainer(container, env, configuration);
+            var startupContainer = new StartupHelper(container, env, configuration);
 
             var hostBuilder = new WebHostBuilder()
                 .UseKestrel()
+            
                 // .UseContentRoot(Directory.GetCurrentDirectory())
+                
                 .UseLoggerFactory(loggerFactory) // <-- Please don't deprecate me
+
                 .ConfigureServices(svc =>
                 {
                     // Because how else can I parameterize startup? 
                     svc.AddSingleton(startupContainer);
                 })
+
                 .UseStartup<Startup>();
 
             var host = hostBuilder.Build();
+
             host.Run();
         }
     }
 
-    public class StartupContainer
+    public class StartupHelper
     {
         public IContainer Container { get; }
         public IHostingEnvironment HostingEnvironment { get; }
         public IConfigurationRoot ConfigurationRoot { get; }
         
-        public StartupContainer(IContainer container, IHostingEnvironment hostingEnvironment, IConfigurationRoot configurationRoot)
+        public StartupHelper(IContainer container, IHostingEnvironment hostingEnvironment, IConfigurationRoot configurationRoot)
         {
             Container = container ?? throw new ArgumentNullException(nameof(container));
             HostingEnvironment = hostingEnvironment ?? throw new ArgumentNullException(nameof(hostingEnvironment));
@@ -116,28 +121,33 @@ namespace throwawayx
 
     public class Startup : StartupBase
     {
-        public StartupContainer Container { get; }
-        public IConfigurationRoot Configuration => Container.ConfigurationRoot;
+        public StartupHelper Helper { get; }
+        public IConfigurationRoot Configuration => Helper.ConfigurationRoot;
 
-        public Startup(StartupContainer container)
+        public Startup(StartupHelper container)
         {
-            Container = container;
+            Helper = container;
         }
 
         public override IServiceProvider ConfigureServices(IServiceCollection services)
         {
-            var scope = Container.Container.BeginLifetimeScope(cb =>
+            // I take my existing Autofac container, spawn a child scpoe, and 
+            // register the services being added to that child container.
+            // then I'll create an AutofacServiceProvider out of it.
+            
+            var scope = Helper.Container.BeginLifetimeScope(cb =>
             {
-                // Add framework services.
                 services.AddMvc();
                 
                 cb.Populate(services);
             });
             
             return new AutofacServiceProvider(scope);
+            
+            // I strugged with StartupBase<ContainerBuilder> and the IServiceProviderFactory
+            // but threw in the towel
         }
 
-        // This method gets called by the runtime. Use this method to add services to the container.
         public override void Configure(IApplicationBuilder app)
         {
             var env = app.ApplicationServices.GetService<IHostingEnvironment>();
@@ -148,6 +158,7 @@ namespace throwawayx
 
             app.Use(async (ctx, next) =>
             {
+                // Add ?DEBUG to the end of any request to see the ctx.RequestServices instead
                 if (ctx.Request.Query.ContainsKey("DEBUG"))
                 {
                     var sb = new StringBuilder();
